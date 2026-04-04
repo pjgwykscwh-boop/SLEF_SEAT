@@ -48,7 +48,7 @@ jobs:
           DISPLAY: :99
         run: |
           mkdir -p screenshots
-          timeout 59m python ${{ matrix.script }} 2>&1 | tee output.log
+          timeout 5m python ${{ matrix.script }} 2>&1 | tee output.log
 
       - name: Encode full log for email (skip first 5 lines)
         id: encode_log

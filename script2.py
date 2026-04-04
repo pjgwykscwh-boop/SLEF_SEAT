@@ -180,8 +180,16 @@ def handle_captcha_modal(driver):
 
     for attempt in range(8):
         if attempt > 0:
+            # 检测系统繁忙提示，繁忙时加长等待
+            try:
+                busy_msg = driver.find_element(By.XPATH, "//*[contains(text(), '系统繁忙')]")
+                wait_seconds = 2 + attempt * 1.5  # 递增退避
+                print(f"检测到系统繁忙，等待{wait_seconds:.1f}秒后重试")
+                time.sleep(wait_seconds)
+            except NoSuchElementException:
+                time.sleep(1.2)  # 正常情况也稍微多等一点    
             driver.find_element(By.CSS_SELECTOR, "img.refresh").click()
-            time.sleep(0.8)
+            time.sleep(1.0)
 
         print(f"验证码第{attempt + 1}次尝试")
         click_coords, bg_elem, chars = solve_click_captcha(driver)
@@ -210,9 +218,14 @@ def handle_captcha_modal(driver):
         driver.save_screenshot(f"screenshots/captcha_click_{attempt}.png")
         time.sleep(0.5)
 
-        confirm_btn = WebDriverWait(driver, 5).until(
-            EC.element_to_be_clickable((By.CSS_SELECTOR, "button.confirm-btn"))
-        )
+        # 等待确认按钮变为可点击（而不是直接 until clickable）
+        try:
+            confirm_btn = WebDriverWait(driver, 8).until(
+                EC.element_to_be_clickable((By.CSS_SELECTOR, "button.confirm-btn:not([disabled])"))
+            )
+        except TimeoutException:
+            print(f"第{attempt+1}次：确认按钮未变为可点击，可能系统繁忙，继续重试")
+            continue
         driver.execute_script("arguments[0].click();", confirm_btn)
         print("已点击确定")
         return True
@@ -346,13 +359,8 @@ def choose_it(driver, sit_avilable, idx, reading_room, day_type, max_attempts=50
                         submit_button = WebDriverWait(driver, 10).until(
                             EC.element_to_be_clickable((By.CSS_SELECTOR, ".el-button.submit-btn.el-button--default"))
                         )
-                        #
-                        if attempt >= 2:
-                            wait_until_open(opentime_text)
-                            submit_button.click()
-                        else:
-                            wait_until_630()
-                            submit_button.click()
+                        wait_until_630()
+                        submit_button.click()
                         try:
                             WebDriverWait(driver, 3).until(
                                 EC.presence_of_element_located((By.CSS_SELECTOR, "img.captcha-text"))
@@ -886,12 +894,14 @@ def get_beijing_time():
 def wait_until_630():
     while True:
         now = get_beijing_time()
-        if now.hour > 6 or (now.hour == 6 and now.minute >= 29):
-            # print(f"当前北京时间 {now.strftime('%H:%M:%S')}，已过 6:29，开始执行任务。")
+        target = now.replace(hour=6, minute=30, second=0, microsecond=0)
+        if now >= target:
             break
+        remaining = (target - now).total_seconds()
+        if remaining > 1:
+            time.sleep(0.5)
         else:
-            # print(f"当前北京时间 {now.strftime('%H:%M:%S')}，未到 6:29，继续等待...")
-            time.sleep(1)  # 每 1 秒检查一次
+            time.sleep(0.05)  # 最后1秒内高频检查
 
 
 # 等待直到早上 6:25（北京时间）

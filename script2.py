@@ -144,16 +144,15 @@ def idtf_imf(account, password, options):
 
     raise Exception(f"达到最大重试次数 ({max_retries})，无法登录")
 def solve_click_captcha(driver):
-    # 精确选择器
     hint_img_elem = driver.find_element(By.CSS_SELECTOR, "img.captcha-text")
     bg_img_elem = driver.find_element(By.CSS_SELECTOR, ".captcha-modal-content img")
 
-    # 提示图OCR
+    # 提示图OCR - 取全部汉字，不限数量
     hint_bytes = base64.b64decode(hint_img_elem.get_attribute("src").split(",")[1])
-    ocr = ddddocr.DdddOcr(det=False, use_gpu=False, show_ad=False)
-    raw = ocr.classification(hint_bytes)
-    chars_to_click = [c for c in raw if '\u4e00' <= c <= '\u9fff'][:1]
-    print(f"OCR原始: '{raw}' → 目标字: {chars_to_click}")
+    ocr_cls = ddddocr.DdddOcr(det=False, use_gpu=False, show_ad=False)
+    raw = ocr_cls.classification(hint_bytes)
+    chars_to_click = [c for c in raw if '\u4e00' <= c <= '\u9fff']  # 去掉[:1]
+    print(f"OCR原始: '{raw}' → 目标字: {chars_to_click} (共{len(chars_to_click)}个)")
 
     # 背景图det定位
     bg_bytes = base64.b64decode(bg_img_elem.get_attribute("src").split(",")[1])
@@ -162,15 +161,28 @@ def solve_click_captcha(driver):
     bg_image = Image.open(BytesIO(bg_bytes))
 
     click_coords = []
+    used_bboxes = set()  # 避免同一个bbox被多个字重复使用
+
     for char in chars_to_click:
-        for bbox in bboxes:
+        best_match = None
+        for i, bbox in enumerate(bboxes):
+            if i in used_bboxes:
+                continue
             x1, y1, x2, y2 = bbox
             cropped = bg_image.crop((max(0, x1 - 4), max(0, y1 - 4), x2 + 4, y2 + 4))
-            recognized = ocr.classification(cropped).strip()
+            recognized = ocr_cls.classification(cropped).strip()
             if char in recognized:
-                click_coords.append(((x1 + x2) // 2, (y1 + y2) // 2))
-                print(f"✓ '{char}' 在坐标 ({(x1 + x2) // 2}, {(y1 + y2) // 2})")
-                break
+                best_match = (i, bbox)
+                break  # 找到就停，按顺序匹配
+
+        if best_match:
+            i, (x1, y1, x2, y2) = best_match
+            used_bboxes.add(i)
+            coord = ((x1 + x2) // 2, (y1 + y2) // 2)
+            click_coords.append(coord)
+            print(f"✓ '{char}' 在坐标 {coord}")
+        else:
+            print(f"✗ 未找到 '{char}'")
 
     return click_coords, bg_img_elem, chars_to_click
 

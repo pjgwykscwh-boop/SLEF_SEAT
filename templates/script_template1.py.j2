@@ -13,14 +13,57 @@ from selenium.webdriver.edge.options import Options as EdgeOptions
 from selenium.webdriver.chrome.options import Options as ChromeOptions
 import sys
 import os
-
+# ================= 新增的 PaddleOCR 依赖 =================
+import urllib.request
+import numpy as np
+from paddleocr import PaddleOCR
+# ========================================================
 '''your_account1,your_password1,start_time1,end_time1,
 your_account2,your_password2,start_time2,end_time2,your_preferroom,your_prefersit,'''
 # 账号密码字典
 
 
 ocr = ddddocr.DdddOcr(det=False, use_gpu=False)
+# ================= 全局初始化自定义 PaddleOCR 模型 =================
+# GitHub Releases 上的模型文件地址（替换为你实际的release地址）
+_MODEL_BASE_URL = "https://github.com/pjgwykscwh-boop/SLEF_SEAT/releases/download/v1.0.0/"
+_MODEL_DIR = "./ocr_model"
+_MODEL_FILES = [
+    "inference.pdmodel",
+    "inference.pdiparams",
+    "inference.pdiparams.info",
+    "inference.yml",
+    "ppocr_keys_v1.txt",
+]
 
+def _ensure_model():
+    """首次运行时自动从 GitHub Releases 下载模型文件"""
+    os.makedirs(_MODEL_DIR, exist_ok=True)
+    for fname in _MODEL_FILES:
+        fpath = os.path.join(_MODEL_DIR, fname)
+        if not os.path.exists(fpath):
+            print(f"正在下载模型文件: {fname} ...")
+            urllib.request.urlretrieve(_MODEL_BASE_URL + fname, fpath)
+    print("✓ 模型文件就绪")
+
+print("正在初始化环境...")
+try:
+    _ensure_model()
+    custom_ocr = PaddleOCR(
+        use_angle_cls=False,
+        lang='ch',
+        rec_model_dir=_MODEL_DIR,
+        rec_char_dict_path=os.path.join(_MODEL_DIR, "ppocr_keys_v1.txt"),
+        rec_image_shape="3,48,320",
+        use_gpu=False,
+        show_log=False,
+    )
+    print("✓ 自定义 PaddleOCR 模型加载成功！")
+    CUSTOM_MODEL_LOADED = True
+except Exception as e:
+    print(f"✗ 自定义模型加载失败: {e}。将降级全部使用 ddddocr。")
+    CUSTOM_MODEL_LOADED = False
+# ====================================================================
 
 # 全天可约性检查，通用版
 
@@ -156,19 +199,47 @@ def solve_click_captcha(driver):
     bg_bytes = base64.b64decode(bg_img_elem.get_attribute("src").split(",")[1])
     det = ddddocr.DdddOcr(det=True, show_ad=False)
     bboxes = det.detection(bg_bytes)
-    bg_image = Image.open(BytesIO(bg_bytes))
+    bg_image = Image.open(BytesIO(bg_bytes)).convert("RGB")
 
     click_coords = []
     used_bboxes = set()  # 避免同一个bbox被多个字重复使用
+    # 动态决策：是否启用自定义模型
+    # 条件：成功加载了模型，且目标字数大于1（即三字复杂验证码）
+    use_custom_model = CUSTOM_MODEL_LOADED and len(chars_to_click) > 1
+    if use_custom_model:
+        print("检测到多字验证码，启用 PaddleOCR 模型识别背景字...")
+    else:
+        print("单字验证码或未加载模型，使用基础 ddddocr 识别背景字...")
 
+    # 先提取所有候选框的预测结果（修复：统一用candidate_preds做匹配）
+    candidate_preds = []
+    for i, bbox in enumerate(bboxes):
+        x1, y1, x2, y2 = bbox
+        cropped = bg_image.crop((max(0, x1 - 4), max(0, y1 - 4), x2 + 4, y2 + 4))
+
+        if use_custom_model:
+            # 走 PaddleOCR 推理流程（单字识别）
+            try:
+                result = custom_ocr.ocr(np.array(cropped), cls=False)
+                if result and result[0]:
+                    recognized = result[0][0][1][0].strip()
+                else:
+                    recognized = ""
+            except Exception:
+                recognized = ocr_cls.classification(cropped).strip()
+        else:
+            # 走原本的 ddddocr 流程
+            recognized = ocr_cls.classification(cropped).strip()
+
+        candidate_preds.append((i, bbox, recognized))
+        print(f"  候选框{i}: bbox={bbox}, 识别='{recognized}'")
+
+    # 用candidate_preds做匹配（修复原代码重复用ddddocr的bug）
     for char in chars_to_click:
         best_match = None
-        for i, bbox in enumerate(bboxes):
+        for i, bbox, recognized in candidate_preds:
             if i in used_bboxes:
                 continue
-            x1, y1, x2, y2 = bbox
-            cropped = bg_image.crop((max(0, x1 - 4), max(0, y1 - 4), x2 + 4, y2 + 4))
-            recognized = ocr_cls.classification(cropped).strip()
             if char in recognized:
                 best_match = (i, bbox)
                 break  # 找到就停，按顺序匹配
@@ -901,7 +972,7 @@ def get_beijing_time():
 def wait_until_630():
     while True:
         now = get_beijing_time()
-        target = now.replace(hour=6, minute=30, second=5, microsecond=0)
+        target = now.replace(hour=6, minute=35, second=5, microsecond=0)
         if now >= target:
             break
         remaining = (target - now).total_seconds()
@@ -915,7 +986,7 @@ def wait_until_630():
 def wait_until_625():
     while True:
         now = get_beijing_time()
-        if now.hour > 6 or (now.hour == 6 and now.minute >= 25):
+        if now.hour > 6 or (now.hour == 6 and now.minute >= 30):
             # print(f"当前北京时间 {now.strftime('%H:%M:%S')}，已过 6:29，开始执行任务。")
             break
         else:

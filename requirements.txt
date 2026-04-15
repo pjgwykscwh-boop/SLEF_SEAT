@@ -1,3 +1,12 @@
+# 基础依赖
 Pillow
-ddddocr
 selenium
+ddddocr
+
+# OCR 核心依赖 (GitHub Actions 建议使用 CPU 版本)
+paddlepaddle==2.6.1
+paddleocr>=2.7.3
+
+# 辅助依赖
+numpy<2.0.0
+opencv-python

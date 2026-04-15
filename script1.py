@@ -49,15 +49,21 @@ def _ensure_model():
 print("正在初始化环境...")
 try:
     _ensure_model()
-    custom_ocr = PaddleOCR(
+    _dict_path = os.path.join(_MODEL_DIR, "ppocr_keys_v1.txt")
+    _common_args = dict(
         use_angle_cls=False,
         lang='ch',
         rec_model_dir=_MODEL_DIR,
-        rec_char_dict_path=os.path.join(_MODEL_DIR, "ppocr_keys_v1.txt"),
         rec_image_shape="3,48,320",
         use_gpu=False,
         show_log=False,
     )
+    try:
+        # 新版 PaddleOCR 参数名
+        custom_ocr = PaddleOCR(**_common_args, rec_char_dict_path=_dict_path)
+    except TypeError:
+        # 旧版 PaddleOCR 不支持 rec_char_dict_path，忽略该参数
+        custom_ocr = PaddleOCR(**_common_args)
     print("✓ 自定义 PaddleOCR 模型加载成功！")
     CUSTOM_MODEL_LOADED = True
 except Exception as e:

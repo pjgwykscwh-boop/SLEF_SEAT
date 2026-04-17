@@ -71,6 +71,20 @@ def _preprocess_crop(pil_img, target_h=48, target_w=320):
     return paddle.to_tensor(canvas[np.newaxis, :])
 
 print("正在初始化环境...")
+import os
+abs_model_dir = os.path.abspath(_MODEL_DIR)
+print(f"🔍 [侦探模式] 当前寻找的绝对路径: {abs_model_dir}")
+print(f"🔍 [侦探模式] 该目录是否存在? {os.path.exists(abs_model_dir)}")
+
+if os.path.exists(abs_model_dir):
+    print("🔍 [侦探模式] 目录下到底有什么:")
+    for f in os.listdir(abs_model_dir):
+        fpath = os.path.join(abs_model_dir, f)
+        size_kb = os.path.getsize(fpath) / 1024
+        print(f"    - {f} (大小: {size_kb:.2f} KB)")
+else:
+    print("❌ [破案了] GitHub Actions 的运行环境中根本没有 ocr_model 这个文件夹！")
+
 try:
     # 直接加载本地代码库里的模型
     _rec_model, _char_dict = _build_rec_model_native(_MODEL_DIR)

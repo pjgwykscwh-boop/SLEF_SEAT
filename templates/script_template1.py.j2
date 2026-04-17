@@ -13,11 +13,10 @@ from selenium.webdriver.edge.options import Options as EdgeOptions
 from selenium.webdriver.chrome.options import Options as ChromeOptions
 import sys
 import os
-# ================= 新增的 PaddleOCR 依赖 =================
+# ================= 依赖 =================
 import urllib.request
 import numpy as np
-from paddleocr import PaddleOCR
-# ========================================================
+# ========================================
 '''your_account1,your_password1,start_time1,end_time1,
 your_account2,your_password2,start_time2,end_time2,your_preferroom,your_prefersit,'''
 # 账号密码字典
@@ -46,29 +45,57 @@ def _ensure_model():
             urllib.request.urlretrieve(_MODEL_BASE_URL + fname, fpath)
     print("✓ 模型文件就绪")
 
+# ================= 全局：直接用 Paddle 原生 API 加载推理模型 =================
+import paddle
+import paddle.nn.functional as F
+import yaml as _yaml
+
+def _load_config(cfg_path):
+    with open(cfg_path, 'r', encoding='utf-8') as f:
+        return _yaml.safe_load(f)
+
+def _build_rec_model_native(model_dir):
+    """
+    不依赖 PaddleOCR 高层 API，直接用 paddle.jit.load 加载推理模型，
+    避免版本参数不兼容问题。
+    同时读取字符表供后续 softmax 匹配使用。
+    """
+    import paddle
+    model = paddle.jit.load(os.path.join(model_dir, "inference"))
+    model.eval()
+
+    # 读取字符表
+    dict_path = os.path.join(model_dir, "ppocr_keys_v1.txt")
+    with open(dict_path, 'r', encoding='utf-8') as f:
+        char_list = [line.strip() for line in f if line.strip()]
+    # CTCLabelDecode 字符表：blank + 字符 + space
+    char_dict = ['blank'] + char_list + [' ']
+    return model, char_dict
+
+def _preprocess_crop(pil_img, target_h=48, target_w=320):
+    """和训练时一致：保持宽高比缩放 + 右侧补0"""
+    import numpy as np
+    img = pil_img.convert('RGB')
+    orig_w, orig_h = img.size
+    scale = target_h / orig_h
+    new_w = min(int(orig_w * scale), target_w)
+    img = img.resize((new_w, target_h), Image.LANCZOS)
+    arr = np.array(img, dtype=np.float32).transpose(2, 0, 1) / 255.0
+    arr = (arr - 0.5) / 0.5
+    canvas = np.zeros((3, target_h, target_w), dtype=np.float32)
+    canvas[:, :, :new_w] = arr
+    return paddle.to_tensor(canvas[np.newaxis, :])
+
 print("正在初始化环境...")
 try:
     _ensure_model()
-    _dict_path = os.path.join(_MODEL_DIR, "ppocr_keys_v1.txt")
-    _common_args = dict(
-        use_angle_cls=False,
-        lang='ch',
-        rec_model_dir=_MODEL_DIR,
-        rec_image_shape="3,48,320",
-        use_gpu=False,
-        show_log=False,
-    )
-    try:
-        # 新版 PaddleOCR 参数名
-        custom_ocr = PaddleOCR(**_common_args, rec_char_dict_path=_dict_path)
-    except TypeError:
-        # 旧版 PaddleOCR 不支持 rec_char_dict_path，忽略该参数
-        custom_ocr = PaddleOCR(**_common_args)
-    print("✓ 自定义 PaddleOCR 模型加载成功！")
+    _rec_model, _char_dict = _build_rec_model_native(_MODEL_DIR)
+    print(f"✓ 自定义模型加载成功！字符表大小：{len(_char_dict)}")
     CUSTOM_MODEL_LOADED = True
 except Exception as e:
     print(f"✗ 自定义模型加载失败: {e}。将降级全部使用 ddddocr。")
     CUSTOM_MODEL_LOADED = False
+# ============================================================================
 # ====================================================================
 
 # 全天可约性检查，通用版
@@ -194,70 +221,94 @@ def solve_click_captcha(driver):
     hint_img_elem = driver.find_element(By.CSS_SELECTOR, "img.captcha-text")
     bg_img_elem = driver.find_element(By.CSS_SELECTOR, ".captcha-modal-content img")
 
-    # 提示图OCR - 取全部汉字，不限数量
+    # ---- 提示图：用 ddddocr 识别目标汉字（单字/多字均用此方式） ----
     hint_bytes = base64.b64decode(hint_img_elem.get_attribute("src").split(",")[1])
     ocr_cls = ddddocr.DdddOcr(det=False, use_gpu=False, show_ad=False)
     raw = ocr_cls.classification(hint_bytes)
-    chars_to_click = [c for c in raw if '\u4e00' <= c <= '\u9fff']  # 去掉[:1]
+    chars_to_click = [c for c in raw if '\u4e00' <= c <= '\u9fff']
     print(f"OCR原始: '{raw}' → 目标字: {chars_to_click} (共{len(chars_to_click)}个)")
 
-    # 背景图det定位
+    # ---- 背景图：用 ddddocr det 定位所有字框 ----
     bg_bytes = base64.b64decode(bg_img_elem.get_attribute("src").split(",")[1])
     det = ddddocr.DdddOcr(det=True, show_ad=False)
     bboxes = det.detection(bg_bytes)
     bg_image = Image.open(BytesIO(bg_bytes)).convert("RGB")
 
     click_coords = []
-    used_bboxes = set()  # 避免同一个bbox被多个字重复使用
-    # 动态决策：是否启用自定义模型
-    # 条件：成功加载了模型，且目标字数大于1（即三字复杂验证码）
+    used_bboxes = set()
+
+    # 多字验证码（艺术字）：用训练模型的 softmax 概率匹配，准确率远高于字符串匹配
     use_custom_model = CUSTOM_MODEL_LOADED and len(chars_to_click) > 1
     if use_custom_model:
-        print("检测到多字验证码，启用 PaddleOCR 模型识别背景字...")
-    else:
-        print("单字验证码或未加载模型，使用基础 ddddocr 识别背景字...")
+        print("检测到多字验证码，启用自定义模型 softmax 概率匹配...")
 
-    # 先提取所有候选框的预测结果（修复：统一用candidate_preds做匹配）
-    candidate_preds = []
-    for i, bbox in enumerate(bboxes):
-        x1, y1, x2, y2 = bbox
-        cropped = bg_image.crop((max(0, x1 - 4), max(0, y1 - 4), x2 + 4, y2 + 4))
+        # 对每个候选框跑模型，保存完整概率矩阵
+        crop_features = []
+        for i, bbox in enumerate(bboxes):
+            x1, y1, x2, y2 = bbox
+            cropped = bg_image.crop((max(0, x1 - 4), max(0, y1 - 4), x2 + 4, y2 + 4))
+            tensor = _preprocess_crop(cropped)
+            with paddle.no_grad():
+                preds = _rec_model(tensor)
+                if isinstance(preds, dict):
+                    preds = preds.get('ctc', list(preds.values())[0])
+                # softmax 后取每列最大值对应的字符概率
+                prob_matrix = F.softmax(preds, axis=2).numpy()[0]  # [T, C]
+            crop_features.append({"idx": i, "bbox": bbox, "prob_matrix": prob_matrix})
 
-        if use_custom_model:
-            # 走 PaddleOCR 推理流程（单字识别）
+        # 按目标字顺序，逐个找概率最高的候选框（每框只用一次）
+        for char in chars_to_click:
             try:
-                result = custom_ocr.ocr(np.array(cropped), cls=False)
-                if result and result[0]:
-                    recognized = result[0][0][1][0].strip()
-                else:
-                    recognized = ""
-            except Exception:
-                recognized = ocr_cls.classification(cropped).strip()
-        else:
-            # 走原本的 ddddocr 流程
-            recognized = ocr_cls.classification(cropped).strip()
-
-        candidate_preds.append((i, bbox, recognized))
-        print(f"  候选框{i}: bbox={bbox}, 识别='{recognized}'")
-
-    # 用candidate_preds做匹配（修复原代码重复用ddddocr的bug）
-    for char in chars_to_click:
-        best_match = None
-        for i, bbox, recognized in candidate_preds:
-            if i in used_bboxes:
+                dict_idx = _char_dict.index(char)
+            except ValueError:
+                print(f"✗ '{char}' 不在字符表中，跳过")
                 continue
-            if char in recognized:
-                best_match = (i, bbox)
-                break  # 找到就停，按顺序匹配
 
-        if best_match:
-            i, (x1, y1, x2, y2) = best_match
-            used_bboxes.add(i)
-            coord = ((x1 + x2) // 2, (y1 + y2) // 2)
-            click_coords.append(coord)
-            print(f"✓ '{char}' 在坐标 {coord}")
-        else:
-            print(f"✗ 未找到 '{char}'")
+            best_score, best_idx, best_bbox = -1.0, -1, None
+            for feat in crop_features:
+                if feat["idx"] in used_bboxes:
+                    continue
+                # 取该字在所有时间步上的最大概率作为得分
+                score = float(np.max(feat["prob_matrix"][:, dict_idx]))
+                if score > best_score:
+                    best_score, best_idx, best_bbox = score, feat["idx"], feat["bbox"]
+
+            if best_idx != -1:
+                used_bboxes.add(best_idx)
+                x1, y1, x2, y2 = best_bbox
+                coord = ((x1 + x2) // 2, (y1 + y2) // 2)
+                click_coords.append(coord)
+                print(f"✓ '{char}' → 坐标 {coord}  得分: {best_score:.4f}")
+            else:
+                print(f"✗ 未找到 '{char}'")
+
+    else:
+        # 单字验证码或模型未加载：沿用 ddddocr 字符串匹配
+        print("单字验证码或模型未加载，使用 ddddocr 识别背景字...")
+        candidate_preds = []
+        for i, bbox in enumerate(bboxes):
+            x1, y1, x2, y2 = bbox
+            cropped = bg_image.crop((max(0, x1 - 4), max(0, y1 - 4), x2 + 4, y2 + 4))
+            recognized = ocr_cls.classification(cropped).strip()
+            candidate_preds.append((i, bbox, recognized))
+            print(f"  候选框{i}: bbox={bbox}, 识别='{recognized}'")
+
+        for char in chars_to_click:
+            best_match = None
+            for i, bbox, recognized in candidate_preds:
+                if i in used_bboxes:
+                    continue
+                if char in recognized:
+                    best_match = (i, bbox)
+                    break
+            if best_match:
+                i, (x1, y1, x2, y2) = best_match
+                used_bboxes.add(i)
+                coord = ((x1 + x2) // 2, (y1 + y2) // 2)
+                click_coords.append(coord)
+                print(f"✓ '{char}' 在坐标 {coord}")
+            else:
+                print(f"✗ 未找到 '{char}'")
 
     return click_coords, bg_img_elem, chars_to_click
 

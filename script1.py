@@ -13,8 +13,10 @@ from selenium.webdriver.edge.options import Options as EdgeOptions
 from selenium.webdriver.chrome.options import Options as ChromeOptions
 import sys
 import os
+import time
+from datetime import datetime, timedelta, timezone
+
 # ================= 依赖 =================
-import urllib.request
 import numpy as np
 # ========================================
 '''your_account1,your_password1,start_time1,end_time1,
@@ -24,26 +26,8 @@ your_account2,your_password2,start_time2,end_time2,your_preferroom,your_prefersi
 
 ocr = ddddocr.DdddOcr(det=False, use_gpu=False)
 # ================= 全局初始化自定义 PaddleOCR 模型 =================
-# GitHub Releases 上的模型文件地址（替换为你实际的release地址）
-_MODEL_BASE_URL = "https://github.com/pjgwykscwh-boop/SLEF_SEAT/releases/download/v1.0.0/"
+# 模型现在直接放在 GitHub 仓库里，不再需要下载链接
 _MODEL_DIR = "./ocr_model"
-_MODEL_FILES = [
-    "inference.pdmodel",
-    "inference.pdiparams",
-    "inference.pdiparams.info",
-    "inference.yml",
-    "ppocr_keys_v1.txt",
-]
-
-def _ensure_model():
-    """首次运行时自动从 GitHub Releases 下载模型文件"""
-    os.makedirs(_MODEL_DIR, exist_ok=True)
-    for fname in _MODEL_FILES:
-        fpath = os.path.join(_MODEL_DIR, fname)
-        if not os.path.exists(fpath):
-            print(f"正在下载模型文件: {fname} ...")
-            urllib.request.urlretrieve(_MODEL_BASE_URL + fname, fpath)
-    print("✓ 模型文件就绪")
 
 # ================= 全局：直接用 Paddle 原生 API 加载推理模型 =================
 import paddle
@@ -57,15 +41,15 @@ def _load_config(cfg_path):
 def _build_rec_model_native(model_dir):
     """
     不依赖 PaddleOCR 高层 API，直接用 paddle.jit.load 加载推理模型，
-    避免版本参数不兼容问题。
-    同时读取字符表供后续 softmax 匹配使用。
+    避免版本参数不兼容问题。强制使用绝对路径防止 CI 环境工作目录偏移。
     """
     import paddle
-    model = paddle.jit.load(os.path.join(model_dir, "inference"))
+    abs_model_dir = os.path.abspath(model_dir)
+    model = paddle.jit.load(os.path.join(abs_model_dir, "inference"))
     model.eval()
 
     # 读取字符表
-    dict_path = os.path.join(model_dir, "ppocr_keys_v1.txt")
+    dict_path = os.path.join(abs_model_dir, "ppocr_keys_v1.txt")
     with open(dict_path, 'r', encoding='utf-8') as f:
         char_list = [line.strip() for line in f if line.strip()]
     # CTCLabelDecode 字符表：blank + 字符 + space
@@ -88,7 +72,7 @@ def _preprocess_crop(pil_img, target_h=48, target_w=320):
 
 print("正在初始化环境...")
 try:
-    _ensure_model()
+    # 直接加载本地代码库里的模型
     _rec_model, _char_dict = _build_rec_model_native(_MODEL_DIR)
     print(f"✓ 自定义模型加载成功！字符表大小：{len(_char_dict)}")
     CUSTOM_MODEL_LOADED = True
@@ -721,7 +705,7 @@ def choose_sit(driver, reading_room):
     return seat_dict, driver
 
 
-# 检查位置的可约性，要么全天可约，要么半天，否则直接放弃;
+# 检查位置的可约性，要么全天可约，要么半天，否则直接放弃
 import random
 
 
@@ -1016,9 +1000,6 @@ def perform_operations(driver, sit_avilable, idx, reading_room, day_type, accoun
 
 
 import tempfile
-
-import time
-from datetime import datetime, timedelta, timezone
 
 
 # 获取北京时间（东八区时间）

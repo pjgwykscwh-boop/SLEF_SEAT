@@ -40,21 +40,33 @@ def _load_config(cfg_path):
 
 def _build_rec_model_native(model_dir):
     """
-    不依赖 PaddleOCR 高层 API，直接用 paddle.jit.load 加载推理模型，
-    避免版本参数不兼容问题。强制使用绝对路径防止 CI 环境工作目录偏移。
+    使用 Paddle 工业级 Inference 引擎加载模型，
+    彻底绕过 jit.load 的环境兼容性 Bug。
     """
-    import paddle
+    import paddle.inference as paddle_infer
     abs_model_dir = os.path.abspath(model_dir)
-    model = paddle.jit.load(os.path.join(abs_model_dir, "inference"))
-    model.eval()
+    
+    # 明确指定 model 和 params 文件的绝对路径
+    model_file = os.path.join(abs_model_dir, "inference.pdmodel")
+    params_file = os.path.join(abs_model_dir, "inference.pdiparams")
+    
+    # 初始化推理配置
+    config = paddle_infer.Config(model_file, params_file)
+    config.disable_gpu()        # GitHub Actions 只有 CPU
+    config.enable_mkldnn()      # 开启 CPU 硬件加速
+    config.switch_ir_optim()    # 开启计算图优化
+    
+    # 创建终极预测器
+    predictor = paddle_infer.create_predictor(config)
 
     # 读取字符表
     dict_path = os.path.join(abs_model_dir, "ppocr_keys_v1.txt")
     with open(dict_path, 'r', encoding='utf-8') as f:
         char_list = [line.strip() for line in f if line.strip()]
+    
     # CTCLabelDecode 字符表：blank + 字符 + space
     char_dict = ['blank'] + char_list + [' ']
-    return model, char_dict
+    return predictor, char_dict
 
 def _preprocess_crop(pil_img, target_h=48, target_w=320):
     """和训练时一致：保持宽高比缩放 + 右侧补0"""
@@ -246,12 +258,24 @@ def solve_click_captcha(driver):
             x1, y1, x2, y2 = bbox
             cropped = bg_image.crop((max(0, x1 - 4), max(0, y1 - 4), x2 + 4, y2 + 4))
             tensor = _preprocess_crop(cropped)
-            with paddle.no_grad():
-                preds = _rec_model(tensor)
-                if isinstance(preds, dict):
-                    preds = preds.get('ctc', list(preds.values())[0])
-                # softmax 后取每列最大值对应的字符概率
-                prob_matrix = F.softmax(preds, axis=2).numpy()[0]  # [T, C]
+            input_data = tensor.numpy()  # Inference 引擎需要 numpy 格式
+            
+            # 喂入数据
+            input_names = _rec_model.get_input_names()
+            input_handle = _rec_model.get_input_handle(input_names[0])
+            input_handle.copy_from_cpu(input_data)
+            
+            # 执行推理
+            _rec_model.run()
+            
+            # 获取结果
+            output_names = _rec_model.get_output_names()
+            output_handle = _rec_model.get_output_handle(output_names[0])
+            preds_ndarray = output_handle.copy_to_cpu()
+            
+            # 计算 softmax 概率
+            preds_tensor = paddle.to_tensor(preds_ndarray)
+            prob_matrix = F.softmax(preds_tensor, axis=2).numpy()[0]  # [T, C]
             crop_features.append({"idx": i, "bbox": bbox, "prob_matrix": prob_matrix})
 
         # 按目标字顺序，逐个找概率最高的候选框（每框只用一次）

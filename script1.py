@@ -274,8 +274,13 @@ def solve_click_captcha(driver):
             preds_ndarray = output_handle.copy_to_cpu()
             
             # 计算 softmax 概率
-            preds_tensor = paddle.to_tensor(preds_ndarray)
-            prob_matrix = F.softmax(preds_tensor, axis=2).numpy()[0]  # [T, C]
+            # preds_ndarray 可能是 [B,T,C] 或 [T,C]，统一压成 [T,C] 再 softmax
+            if preds_ndarray.ndim == 3:
+                logits = preds_ndarray[0]          # [T, C]
+            else:
+                logits = preds_ndarray             # [T, C]
+            import scipy.special
+            prob_matrix = scipy.special.softmax(logits, axis=1)  # axis=1 对应字符维度C
             crop_features.append({"idx": i, "bbox": bbox, "prob_matrix": prob_matrix})
 
         # 按目标字顺序，逐个找概率最高的候选框（每框只用一次）

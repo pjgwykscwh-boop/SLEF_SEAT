@@ -1040,7 +1040,7 @@ def get_beijing_time():
 def wait_until_630():
     while True:
         now = get_beijing_time()
-        target = now.replace(hour=6, minute=30, second=5, microsecond=0)
+        target = now.replace(hour=6, minute=30, second=1, microsecond=0)
         if now >= target:
             break
         remaining = (target - now).total_seconds()

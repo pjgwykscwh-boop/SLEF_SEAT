@@ -1048,7 +1048,7 @@ def get_beijing_time():
 def wait_until_630():
     while True:
         now = get_beijing_time()
-        target = now.replace(hour=6, minute=35, second=5, microsecond=0)
+        target = now.replace(hour=6, minute=35, second=0, microsecond=0)
         if now >= target:
             break
         remaining = (target - now).total_seconds()
@@ -1062,7 +1062,7 @@ def wait_until_630():
 def wait_until_625():
     while True:
         now = get_beijing_time()
-        if now.hour > 6 or (now.hour == 6 and now.minute >= 30):
+        if now.hour > 6 or (now.hour == 6 and now.minute >= 25):
             # print(f"当前北京时间 {now.strftime('%H:%M:%S')}，已过 6:29，开始执行任务。")
             break
         else:

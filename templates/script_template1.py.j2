@@ -389,6 +389,8 @@ def handle_captcha_modal(driver):
         except TimeoutException:
             print(f"第{attempt+1}次：确认按钮未变为可点击，可能系统繁忙，继续重试")
             continue
+        if attempt == 0:
+            wait_until_630()
         driver.execute_script("arguments[0].click();", confirm_btn)
         print("已点击确定")
         time.sleep(1.0)
@@ -537,7 +539,6 @@ def choose_it(driver, sit_avilable, idx, reading_room, day_type, max_attempts=50
                             EC.element_to_be_clickable((By.CSS_SELECTOR, ".el-button.submit-btn.el-button--default"))
                         )
                         #
-                        wait_until_630()
                         submit_button.click()
                         try:
                             WebDriverWait(driver, 3).until(
@@ -1068,7 +1069,7 @@ def get_beijing_time():
 def wait_until_630():
     while True:
         now = get_beijing_time()
-        target = now.replace(hour=6, minute=30, second=1, microsecond=0)
+        target = now.replace(hour=6, minute=30, second=0, microsecond=0)
         if now >= target:
             break
         remaining = (target - now).total_seconds()

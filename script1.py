@@ -391,7 +391,22 @@ def handle_captcha_modal(driver):
             continue
         driver.execute_script("arguments[0].click();", confirm_btn)
         print("已点击确定")
-        return True
+        time.sleep(1.0)
+
+        # 检测点击确认后是否弹出"验证码错误"提示
+        try:
+            err_elem = WebDriverWait(driver, 3).until(
+                EC.presence_of_element_located(
+                    (By.XPATH, "//*[contains(text(),'验证码错误') or contains(text(),'请重试')]")
+                )
+            )
+            print(f"验证码点击错误：{err_elem.text}，刷新重试...")
+            # 继续下一轮 attempt（不 return True）
+            continue
+        except TimeoutException:
+            # 没有错误提示，说明验证码通过了
+            print("验证码通过")
+            return True
 
     print("验证码多次失败")
     return False

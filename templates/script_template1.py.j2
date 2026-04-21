@@ -55,7 +55,7 @@ def _build_rec_model_native(model_dir):
     config.disable_gpu()        # GitHub Actions 只有 CPU
     config.enable_mkldnn()      # 开启 CPU 硬件加速
     config.switch_ir_optim()    # 开启计算图优化
-    
+    config.disable_glog_info()
     # 创建终极预测器
     predictor = paddle_infer.create_predictor(config)
 
